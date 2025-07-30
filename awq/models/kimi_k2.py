@@ -79,17 +79,40 @@ class KimiK2AWQForCausalLM(BaseAWQForCausalLM):
         # Handle MLP layers
         if hasattr(module.mlp, "gate"):
             # MoE layer (layers 1-60 in Kimi-K2)
-            # linear in
+            # Check which key is available for MoE input
+            if "mlp" in input_feat:
+                mlp_inp_key = "mlp"
+            else:
+                # Look for expert-specific keys
+                expert_keys = [k for k in input_feat.keys() if "mlp.experts" in k or "mlp.shared_experts" in k]
+                if expert_keys:
+                    mlp_inp_key = expert_keys[0]
+                    print(f"DEBUG: MoE layer using key: {mlp_inp_key}")
+                else:
+                    print(f"DEBUG: MoE layer - available keys: {list(input_feat.keys())}")
+                    raise KeyError(f"No MLP input found for MoE. Available keys: {list(input_feat.keys())}")
+            
+            # linear in - handle each expert separately
+            # First, handle all regular experts
+            for i, expert in enumerate(module.mlp.experts):
+                # Get the appropriate input key for this expert
+                expert_inp_key = f"mlp.experts.{i}.gate_proj" if f"mlp.experts.{i}.gate_proj" in input_feat else mlp_inp_key
+                
+                layers.append(
+                    dict(
+                        prev_op=module.post_attention_layernorm,
+                        layers=[expert.gate_proj, expert.up_proj],
+                        inp=input_feat[expert_inp_key],
+                    )
+                )
+            
+            # Then handle shared experts
+            shared_inp_key = "mlp.shared_experts.gate_proj" if "mlp.shared_experts.gate_proj" in input_feat else mlp_inp_key
             layers.append(
                 dict(
                     prev_op=module.post_attention_layernorm,
-                    layers=[
-                        w
-                        for expert in module.mlp.experts
-                        for w in [expert.gate_proj, expert.up_proj]
-                    ] + [module.mlp.shared_experts.gate_proj, module.mlp.shared_experts.up_proj],
-                    inp=input_feat["mlp"],
-                    module2inspect=module.mlp,
+                    layers=[module.mlp.shared_experts.gate_proj, module.mlp.shared_experts.up_proj],
+                    inp=input_feat[shared_inp_key],
                 )
             )
 
@@ -112,46 +135,23 @@ class KimiK2AWQForCausalLM(BaseAWQForCausalLM):
             )
         else:
             # Dense layer (layer 0 in Kimi-K2)
-            # Check which key is available in input_feat
-            if "mlp.gate_proj" in input_feat:
-                mlp_inp_key = "mlp.gate_proj"
-            elif "mlp" in input_feat:
-                mlp_inp_key = "mlp"
-            else:
-                # Debug: print available keys
-                print(f"DEBUG: Dense layer - available keys: {list(input_feat.keys())}")
-                # Try to find any mlp-related key
-                mlp_keys = [k for k in input_feat.keys() if "mlp" in k]
-                if mlp_keys:
-                    mlp_inp_key = mlp_keys[0]
-                else:
-                    raise KeyError(f"No MLP input found. Available keys: {list(input_feat.keys())}")
-            
+            # Based on the debug output, we need to use the specific keys available
             # linear 1
             layers.append(
                 dict(
                     prev_op=module.post_attention_layernorm,
                     layers=[module.mlp.gate_proj, module.mlp.up_proj],
-                    inp=input_feat[mlp_inp_key],
+                    inp=input_feat["mlp.up_proj"],  # Use up_proj as input since gate_proj key doesn't exist
                     module2inspect=module.mlp,
                 )
             )
 
             # linear 2
-            # For down_proj, check if specific key exists
-            if "mlp.down_proj" in input_feat:
-                down_proj_key = "mlp.down_proj"
-            elif "mlp" in input_feat:
-                down_proj_key = "mlp"
-            else:
-                # Use the same key as gate_proj
-                down_proj_key = mlp_inp_key
-                
             layers.append(
                 dict(
                     prev_op=module.mlp.up_proj,
                     layers=[module.mlp.down_proj],
-                    inp=input_feat[down_proj_key],
+                    inp=input_feat["mlp.down_proj"],
                 )
             )
 
