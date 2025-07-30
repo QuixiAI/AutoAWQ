@@ -76,8 +76,27 @@ class KimiK2AWQForCausalLM(BaseAWQForCausalLM):
         )
 
         # Handle MLP layers
-        if hasattr(module.mlp, "gate"):
+        # Kimi-K2: Layer 0 is dense, layers 1-60 have MoE with 384 experts
+        if hasattr(module.mlp, "gate") and hasattr(module.mlp, "experts"):
             # MoE layer with experts (Kimi-K2 has 384 experts per layer)
+            # Check if we have the expected input features
+            if "mlp" not in input_feat:
+                # For MoE layers, we might need to handle inputs differently
+                # Look for expert-specific inputs
+                expert_keys = [k for k in input_feat.keys() if "mlp.experts" in k or "mlp.shared_experts" in k]
+                if expert_keys:
+                    # Use the first expert key as reference
+                    mlp_inp = input_feat[expert_keys[0]]
+                else:
+                    # Fallback to any mlp-related key
+                    mlp_keys = [k for k in input_feat.keys() if "mlp" in k]
+                    if mlp_keys:
+                        mlp_inp = input_feat[mlp_keys[0]]
+                    else:
+                        raise KeyError(f"No MLP-related keys found in input_feat: {list(input_feat.keys())}")
+            else:
+                mlp_inp = input_feat["mlp"]
+            
             # linear in
             layers.append(
                 dict(
@@ -87,7 +106,7 @@ class KimiK2AWQForCausalLM(BaseAWQForCausalLM):
                         for expert in module.mlp.experts
                         for w in [expert.gate_proj, expert.up_proj]
                     ] + [module.mlp.shared_experts.gate_proj, module.mlp.shared_experts.up_proj],
-                    inp=input_feat["mlp"],
+                    inp=mlp_inp,
                     module2inspect=module.mlp,
                 )
             )
