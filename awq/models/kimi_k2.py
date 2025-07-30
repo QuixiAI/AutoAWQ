@@ -78,6 +78,7 @@ class KimiK2AWQForCausalLM(BaseAWQForCausalLM):
 
         # Handle MLP layers
         if hasattr(module.mlp, "gate"):
+            # MoE layer (layers 1-60 in Kimi-K2)
             # linear in
             layers.append(
                 dict(
@@ -110,23 +111,47 @@ class KimiK2AWQForCausalLM(BaseAWQForCausalLM):
                 )
             )
         else:
-            # Dense layer (first layer in Kimi-K2)
+            # Dense layer (layer 0 in Kimi-K2)
+            # Check which key is available in input_feat
+            if "mlp.gate_proj" in input_feat:
+                mlp_inp_key = "mlp.gate_proj"
+            elif "mlp" in input_feat:
+                mlp_inp_key = "mlp"
+            else:
+                # Debug: print available keys
+                print(f"DEBUG: Dense layer - available keys: {list(input_feat.keys())}")
+                # Try to find any mlp-related key
+                mlp_keys = [k for k in input_feat.keys() if "mlp" in k]
+                if mlp_keys:
+                    mlp_inp_key = mlp_keys[0]
+                else:
+                    raise KeyError(f"No MLP input found. Available keys: {list(input_feat.keys())}")
+            
             # linear 1
             layers.append(
                 dict(
                     prev_op=module.post_attention_layernorm,
                     layers=[module.mlp.gate_proj, module.mlp.up_proj],
-                    inp=input_feat["mlp.gate_proj"],
+                    inp=input_feat[mlp_inp_key],
                     module2inspect=module.mlp,
                 )
             )
 
             # linear 2
+            # For down_proj, check if specific key exists
+            if "mlp.down_proj" in input_feat:
+                down_proj_key = "mlp.down_proj"
+            elif "mlp" in input_feat:
+                down_proj_key = "mlp"
+            else:
+                # Use the same key as gate_proj
+                down_proj_key = mlp_inp_key
+                
             layers.append(
                 dict(
                     prev_op=module.mlp.up_proj,
                     layers=[module.mlp.down_proj],
-                    inp=input_feat["mlp.down_proj"],
+                    inp=input_feat[down_proj_key],
                 )
             )
 
