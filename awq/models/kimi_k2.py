@@ -92,27 +92,46 @@ class KimiK2AWQForCausalLM(BaseAWQForCausalLM):
                     print(f"DEBUG: MoE layer - available keys: {list(input_feat.keys())}")
                     raise KeyError(f"No MLP input found for MoE. Available keys: {list(input_feat.keys())}")
             
-            # linear in - handle each expert separately
-            # First, handle all regular experts
+            # linear in
+            # For MoE layers, we need to process each weight separately to avoid issues
+            # Handle gate_proj for all experts
             for i, expert in enumerate(module.mlp.experts):
-                # Get the appropriate input key for this expert
-                expert_inp_key = f"mlp.experts.{i}.gate_proj" if f"mlp.experts.{i}.gate_proj" in input_feat else mlp_inp_key
-                
+                expert_gate_key = f"mlp.experts.{i}.gate_proj" if f"mlp.experts.{i}.gate_proj" in input_feat else mlp_inp_key
                 layers.append(
                     dict(
                         prev_op=module.post_attention_layernorm,
-                        layers=[expert.gate_proj, expert.up_proj],
-                        inp=input_feat[expert_inp_key],
+                        layers=[expert.gate_proj],
+                        inp=input_feat[expert_gate_key],
                     )
                 )
             
-            # Then handle shared experts
-            shared_inp_key = "mlp.shared_experts.gate_proj" if "mlp.shared_experts.gate_proj" in input_feat else mlp_inp_key
+            # Handle up_proj for all experts
+            for i, expert in enumerate(module.mlp.experts):
+                expert_up_key = f"mlp.experts.{i}.up_proj" if f"mlp.experts.{i}.up_proj" in input_feat else mlp_inp_key
+                layers.append(
+                    dict(
+                        prev_op=module.post_attention_layernorm,
+                        layers=[expert.up_proj],
+                        inp=input_feat[expert_up_key],
+                    )
+                )
+            
+            # Handle shared experts
+            shared_gate_key = "mlp.shared_experts.gate_proj" if "mlp.shared_experts.gate_proj" in input_feat else mlp_inp_key
             layers.append(
                 dict(
                     prev_op=module.post_attention_layernorm,
-                    layers=[module.mlp.shared_experts.gate_proj, module.mlp.shared_experts.up_proj],
-                    inp=input_feat[shared_inp_key],
+                    layers=[module.mlp.shared_experts.gate_proj],
+                    inp=input_feat[shared_gate_key],
+                )
+            )
+            
+            shared_up_key = "mlp.shared_experts.up_proj" if "mlp.shared_experts.up_proj" in input_feat else mlp_inp_key
+            layers.append(
+                dict(
+                    prev_op=module.post_attention_layernorm,
+                    layers=[module.mlp.shared_experts.up_proj],
+                    inp=input_feat[shared_up_key],
                 )
             )
 
